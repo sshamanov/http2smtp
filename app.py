@@ -4,7 +4,8 @@ Simple synchronous HTTP-to-SMTP mail API.
 
 - Python stdlib only
 - Static Bearer token auth from env
-- Synchronous SMTP submission to an existing authenticated MTA
+- Auto-probes SMTP server to discover working TLS / auth combination
+- Caches discovered settings in a JSON config file
 - Success means the SMTP server accepted the message
 """
 
@@ -16,11 +17,16 @@ import os
 import smtplib
 import ssl
 import sys
+import time
 from email.message import EmailMessage
 from email.utils import formataddr, parseaddr
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
 
 def getenv_required(name: str) -> str:
     value = os.getenv(name)
@@ -43,28 +49,199 @@ API_TOKEN = getenv_required("API_TOKEN")
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = getenv_int("LISTEN_PORT", 8080)
 
+# SMTP — only SMTP_HOST is required; the rest are optional / auto-probed.
 SMTP_HOST = getenv_required("SMTP_HOST")
-SMTP_PORT = getenv_int("SMTP_PORT", 587)
-SMTP_USERNAME = getenv_required("SMTP_USERNAME")
-SMTP_PASSWORD = getenv_required("SMTP_PASSWORD")
-SMTP_TLS = os.getenv("SMTP_TLS", "starttls").lower()
-SMTP_FROM_DEFAULT = getenv_required("SMTP_FROM_DEFAULT")
-SMTP_TIMEOUT_SECONDS = getenv_int("SMTP_TIMEOUT_SECONDS", 30)
+_SMTP_PORT_HINT = os.getenv("SMTP_PORT")          # optional — narrows probing
+_SMTP_PORT_HINT_INT = int(_SMTP_PORT_HINT) if _SMTP_PORT_HINT else None
+SMTP_USERNAME = os.getenv("SMTP_USERNAME") or None
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD") or None
+SMTP_FROM_DEFAULT = os.getenv("SMTP_FROM_DEFAULT") or SMTP_USERNAME or ""
+
+SMTP_CONFIG_PATH = os.getenv("SMTP_CONFIG_PATH", "/app/smtp_config.json")
+SMTP_PROBE_TIMEOUT = getenv_int("SMTP_PROBE_TIMEOUT", 10)  # seconds per probe attempt
+SMTP_PROBE_DELAY = getenv_int("SMTP_PROBE_DELAY", 3)        # seconds between probes
+SMTP_RUNTIME_TIMEOUT = getenv_int("SMTP_RUNTIME_TIMEOUT", 30)  # seconds for normal send
 
 MAX_RECIPIENTS = getenv_int("MAX_RECIPIENTS", 20)
 MAX_BODY_BYTES = getenv_int("MAX_BODY_BYTES", 1_048_576)
 
-if SMTP_TLS not in {"none", "starttls", "ssl"}:
-    raise RuntimeError("SMTP_TLS must be one of: none, starttls, ssl")
+# SSL — never verify certificates (compatibility with self-signed / open-relay certs).
+_SSL_CONTEXT = ssl.create_default_context()
+_SSL_CONTEXT.check_hostname = False
+_SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
-_SMTP_SKIP_VERIFY = os.getenv("SMTP_SKIP_VERIFY", "").lower() in {"1", "true", "yes"}
-if _SMTP_SKIP_VERIFY:
-    _SSL_CONTEXT = ssl.create_default_context()
-    _SSL_CONTEXT.check_hostname = False
-    _SSL_CONTEXT.verify_mode = ssl.CERT_NONE
-else:
-    _SSL_CONTEXT = ssl.create_default_context()
+_HAS_CREDENTIALS = bool(SMTP_USERNAME and SMTP_PASSWORD)
 
+
+# ---------------------------------------------------------------------------
+# SMTP config file (auto-probed, cached to disk)
+# ---------------------------------------------------------------------------
+
+def _config_key() -> str:
+    """Key used to store/retrieve per-server settings.
+
+    Normally just the hostname.  When SMTP_PORT is explicitly set the key
+    includes the port so that adding a port later does not overwrite a
+    previously discovered entry for the bare hostname.
+    """
+    if _SMTP_PORT_HINT is not None:
+        return f"{SMTP_HOST}:{_SMTP_PORT_HINT}"
+    return SMTP_HOST
+
+
+def _load_config() -> dict[str, Any]:
+    try:
+        with open(SMTP_CONFIG_PATH) as fh:
+            return json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_config(settings: dict[str, Any]) -> None:
+    cfg = _load_config()
+    cfg[_config_key()] = settings
+    os.makedirs(os.path.dirname(SMTP_CONFIG_PATH) or ".", exist_ok=True)
+    with open(SMTP_CONFIG_PATH, "w") as fh:
+        json.dump(cfg, fh, indent=2, sort_keys=True)
+
+
+# ---------------------------------------------------------------------------
+# Probe carousel
+# ---------------------------------------------------------------------------
+
+def _probe_one(host: str, port: int, tls: str, use_auth: bool, retry: bool = True) -> dict[str, Any] | None:
+    """Try a single host:port:TLS:auth combination.  Return settings dict or None.
+
+    On transient failures (rate limiting) a second attempt is made after a
+    short delay.
+    """
+    for attempt in (1, 2):
+        try:
+            if tls == "ssl":
+                smtp = smtplib.SMTP_SSL(host, port, timeout=SMTP_PROBE_TIMEOUT, context=_SSL_CONTEXT)
+            else:
+                smtp = smtplib.SMTP(host, port, timeout=SMTP_PROBE_TIMEOUT)
+
+            try:
+                if tls == "starttls":
+                    smtp.ehlo()
+                    smtp.starttls(context=_SSL_CONTEXT)
+                    smtp.ehlo()
+
+                if use_auth:
+                    assert SMTP_USERNAME and SMTP_PASSWORD  # nosec – guarded by caller
+                    smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+
+                # Verify the session is alive.
+                smtp.docmd("NOOP")
+
+                # Record which AUTH mechanisms the server advertises.
+                auth_mech = ""
+                if use_auth:
+                    auth_mech = smtp.esmtp_features.get("auth", "")
+
+                return {
+                    "port": port,
+                    "tls": tls,
+                    "auth_required": use_auth,
+                    "auth_mechanism": auth_mech.strip(),
+                }
+            finally:
+                try:
+                    smtp.quit()
+                except Exception:
+                    smtp.close()
+        except Exception as exc:
+            if attempt == 1 and retry and "reset" in str(exc).lower():
+                time.sleep(5)  # rate-limit cooldown
+                continue
+            print(json.dumps({"event": "probe_fail", "host": host, "port": port, "tls": tls, "auth": use_auth, "error": str(exc)}), file=sys.stderr)
+            return None
+    return None
+
+
+def _probe_carousel(host: str) -> dict[str, Any]:
+    """Try port / TLS / auth combinations ordered by likelihood; return first winner."""
+    ports = [_SMTP_PORT_HINT_INT] if _SMTP_PORT_HINT_INT else [587, 465, 25]
+
+    has_creds = _HAS_CREDENTIALS
+
+    if has_creds:
+        combos: list[tuple[int, str, bool]] = [
+            (587, "starttls", True),
+            (587, "none",     True),
+            (465, "ssl",      True),
+            (25,  "none",     True),
+            (25,  "starttls", True),
+            (25,  "none",     False),   # open-relay fallback
+        ]
+    else:
+        combos = [
+            (25,  "none",     False),
+            (587, "starttls", False),
+            (587, "none",     False),
+            (465, "ssl",      False),
+            (25,  "starttls", False),
+        ]
+
+    tried: list[str] = []
+    first = True
+    for port, tls, use_auth in combos:
+        if not first:
+            time.sleep(SMTP_PROBE_DELAY)  # avoid SMTP server rate limiting
+        first = False
+        if port not in ports:
+            continue
+        label = f"{host}:{port} TLS={tls} auth={'yes' if use_auth else 'no'}"
+        tried.append(label)
+        result = _probe_one(host, port, tls, use_auth)
+        if result is not None:
+            print(json.dumps({"event": "probe_success", "host": host, **result}), file=sys.stderr)
+            return result
+
+    # Nothing worked.
+    msg = f"No working SMTP configuration found for {host}. Tried: {', '.join(tried)}"
+    raise RuntimeError(msg)
+
+
+# resolved lazily — see get_smtp_settings()
+
+
+_SMTP_SETTINGS: dict[str, Any] | None = None
+
+
+def get_smtp_settings() -> dict[str, Any]:
+    """Return {host, port, tls, auth_required, auth_mechanism} for SMTP_HOST.
+
+    Resolved lazily on first call so that probe tests can import the module
+    without triggering the carousel.
+    """
+    global _SMTP_SETTINGS
+    if _SMTP_SETTINGS is not None:
+        return _SMTP_SETTINGS
+
+    cfg = _load_config()
+    key = _config_key()
+    existing = cfg.get(key)
+
+    if existing is not None:
+        if all(k in existing for k in ("port", "tls", "auth_required")):
+            print(json.dumps({"event": "smtp_config_loaded", "key": key, **existing}), file=sys.stderr)
+            _SMTP_SETTINGS = existing
+            return _SMTP_SETTINGS
+        print(json.dumps({"event": "smtp_config_stale", "key": key}), file=sys.stderr)
+
+    settings = _probe_carousel(SMTP_HOST)
+    settings["host"] = SMTP_HOST
+    _save_config(settings)
+    print(json.dumps({"event": "smtp_config_saved", "key": key}), file=sys.stderr)
+    _SMTP_SETTINGS = settings
+    return _SMTP_SETTINGS
+
+
+# ---------------------------------------------------------------------------
+# Exceptions / helpers
+# ---------------------------------------------------------------------------
 
 class BadRequest(Exception):
     pass
@@ -85,6 +262,10 @@ def json_response(handler: BaseHTTPRequestHandler, http_status: int, app_status:
 def has_header_injection(value: str) -> bool:
     return "\r" in value or "\n" in value
 
+
+# ---------------------------------------------------------------------------
+# Address validation
+# ---------------------------------------------------------------------------
 
 def normalize_address(value: Any, field_name: str) -> str:
     if not isinstance(value, str):
@@ -122,6 +303,10 @@ def normalize_address_list(value: Any, field_name: str, required: bool = False) 
 
     return normalized
 
+
+# ---------------------------------------------------------------------------
+# Payload → EmailMessage
+# ---------------------------------------------------------------------------
 
 def validate_payload(data: Any) -> tuple[EmailMessage, str, list[str]]:
     if not isinstance(data, dict):
@@ -178,19 +363,32 @@ def validate_payload(data: Any) -> tuple[EmailMessage, str, list[str]]:
     return msg, from_addr, recipients
 
 
+# ---------------------------------------------------------------------------
+# SMTP send
+# ---------------------------------------------------------------------------
+
 def send_via_smtp(msg: EmailMessage, from_addr: str, recipients: list[str]) -> None:
-    if SMTP_TLS == "ssl":
-        smtp = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS, context=_SSL_CONTEXT)
+    s = get_smtp_settings()
+    host: str = s["host"]
+    port: int = s["port"]
+    tls: str = s["tls"]
+
+    if tls == "ssl":
+        smtp = smtplib.SMTP_SSL(host, port, timeout=SMTP_RUNTIME_TIMEOUT, context=_SSL_CONTEXT)
     else:
-        smtp = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS)
+        smtp = smtplib.SMTP(host, port, timeout=SMTP_RUNTIME_TIMEOUT)
 
     try:
-        if SMTP_TLS == "starttls":
+        if tls == "starttls":
             smtp.ehlo()
             smtp.starttls(context=_SSL_CONTEXT)
             smtp.ehlo()
 
-        smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+        if s.get("auth_required"):
+            if not SMTP_USERNAME or not SMTP_PASSWORD:
+                raise RuntimeError("SMTP server requires auth but SMTP_USERNAME/SMTP_PASSWORD not set")
+            smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+
         smtp.send_message(msg, from_addr=from_addr, to_addrs=recipients)
     finally:
         try:
@@ -198,6 +396,10 @@ def send_via_smtp(msg: EmailMessage, from_addr: str, recipients: list[str]) -> N
         except Exception:
             smtp.close()
 
+
+# ---------------------------------------------------------------------------
+# HTTP handler
+# ---------------------------------------------------------------------------
 
 class MailAPIHandler(BaseHTTPRequestHandler):
     server_version = "SimpleMailAPI/1.0"
@@ -261,7 +463,14 @@ class MailAPIHandler(BaseHTTPRequestHandler):
             pass  # client disconnected; email was already sent
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 def main() -> None:
+    # Resolve SMTP settings eagerly so misconfiguration fails fast.
+    get_smtp_settings()
+
     server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), MailAPIHandler)
     print(json.dumps({"event": "started", "listen": f"{LISTEN_HOST}:{LISTEN_PORT}"}), file=sys.stderr)
     server.serve_forever()

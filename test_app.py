@@ -47,27 +47,31 @@ BASE_ENV = {
     "LISTEN_HOST": "127.0.0.1",
     "LISTEN_PORT": LISTEN_PORT,
     # Dummy SMTP – validation-only tests never reach the network.
+    # Pre-populate config file so the carousel is skipped.
     "SMTP_HOST": "127.0.0.1",
-    "SMTP_PORT": "1",
     "SMTP_USERNAME": "dummy",
     "SMTP_PASSWORD": "dummy",
     "SMTP_FROM_DEFAULT": "noreply@example.com",
-    "SMTP_TLS": "none",
-    "SMTP_TIMEOUT_SECONDS": "3",
+    "SMTP_CONFIG_PATH": "/tmp/test_smtp_config_dummy.json",
+    "SMTP_PROBE_DELAY": "0",   # no delay in tests
     "MAX_RECIPIENTS": "5",
 }
 
 
+def _write_dummy_config() -> None:
+    """Pre-populate config so the carousel doesn't run for validation tests."""
+    import json as _json
+    os.makedirs(os.path.dirname(BASE_ENV["SMTP_CONFIG_PATH"]) or ".", exist_ok=True)
+    with open(BASE_ENV["SMTP_CONFIG_PATH"], "w") as fh:
+        _json.dump({BASE_ENV["SMTP_HOST"]: {"port": 1, "tls": "none", "auth_required": True, "auth_mechanism": "PLAIN"}}, fh)
+
+
 def _has_real_smtp() -> bool:
-    return all(
-        os.environ.get(v)
-        for v in (
-            "TEST_SMTP_HOST",
-            "TEST_SMTP_PORT",
-            "TEST_SMTP_USERNAME",
-            "TEST_SMTP_PASSWORD",
-            "TEST_SMTP_FROM_DEFAULT",
-        )
+    return bool(
+        os.environ.get("TEST_SMTP_HOST")
+        and os.environ.get("TEST_SMTP_USERNAME")
+        and os.environ.get("TEST_SMTP_PASSWORD")
+        and os.environ.get("TEST_SMTP_FROM_DEFAULT")
     )
 
 
@@ -77,13 +81,12 @@ def _real_smtp_env() -> dict[str, str]:
         **BASE_ENV,
         "LISTEN_PORT": "18081",  # separate port to avoid conflict with main test server
         "SMTP_HOST": os.environ["TEST_SMTP_HOST"],
-        "SMTP_PORT": os.environ["TEST_SMTP_PORT"],
         "SMTP_USERNAME": os.environ["TEST_SMTP_USERNAME"],
         "SMTP_PASSWORD": os.environ["TEST_SMTP_PASSWORD"],
         "SMTP_FROM_DEFAULT": os.environ["TEST_SMTP_FROM_DEFAULT"],
-        "SMTP_TLS": os.environ.get("TEST_SMTP_TLS", "starttls"),
-        "SMTP_TIMEOUT_SECONDS": "15",
-        "SMTP_SKIP_VERIFY": os.environ.get("TEST_SMTP_SKIP_VERIFY", "1"),
+        "SMTP_CONFIG_PATH": "/tmp/test_smtp_config_e2e.json",
+        "SMTP_PROBE_DELAY": "2",
+        "SMTP_PROBE_TIMEOUT": "10",
     }
 
 E2E_PORT = "18081"
@@ -329,6 +332,11 @@ class TestRealSMTPDelivery(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         env = _real_smtp_env()
+        # Delete stale config so the carousel probes fresh.
+        try:
+            os.remove(env["SMTP_CONFIG_PATH"])
+        except FileNotFoundError:
+            pass
         cls._proc = subprocess.Popen(
             [sys.executable, "app.py"],
             env={**os.environ, **env},
@@ -451,6 +459,7 @@ class TestRealSMTPDelivery(unittest.TestCase):
 # Runner
 # ---------------------------------------------------------------------------
 def _start_server() -> subprocess.Popen[bytes]:
+    _write_dummy_config()
     proc = subprocess.Popen(
         [sys.executable, "app.py"],
         env={**os.environ, **BASE_ENV},

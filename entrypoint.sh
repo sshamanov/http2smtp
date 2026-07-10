@@ -2,7 +2,7 @@
 set -e
 
 missing=""
-for var in API_TOKEN SMTP_HOST SMTP_USERNAME SMTP_PASSWORD SMTP_FROM_DEFAULT; do
+for var in API_TOKEN SMTP_HOST; do
   eval "value=\$$var"
   if [ -z "$value" ]; then
     missing="$missing $var"
