@@ -1,6 +1,7 @@
 services:
   mail-api:
-    build: .
+    image: ghcr.io/sshamanov/mail-api:main
+    # build: .  # uncomment to build locally instead of pulling
     container_name: simple-mail-api
     restart: unless-stopped
     network_mode: host
