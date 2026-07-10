@@ -1,0 +1,11 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+.env
+.gitignore
+README.md
+compose.yaml
+compose.yaml.example
+test_*.py
+.github

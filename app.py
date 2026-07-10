@@ -57,13 +57,24 @@ MAX_BODY_BYTES = getenv_int("MAX_BODY_BYTES", 1_048_576)
 if SMTP_TLS not in {"none", "starttls", "ssl"}:
     raise RuntimeError("SMTP_TLS must be one of: none, starttls, ssl")
 
+_SMTP_SKIP_VERIFY = os.getenv("SMTP_SKIP_VERIFY", "").lower() in {"1", "true", "yes"}
+if _SMTP_SKIP_VERIFY:
+    _SSL_CONTEXT = ssl.create_default_context()
+    _SSL_CONTEXT.check_hostname = False
+    _SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+else:
+    _SSL_CONTEXT = ssl.create_default_context()
+
 
 class BadRequest(Exception):
     pass
 
 
-def json_response(handler: BaseHTTPRequestHandler, http_status: int, app_status: str) -> None:
-    body = json.dumps({"status": app_status}, separators=(",", ":")).encode("utf-8")
+def json_response(handler: BaseHTTPRequestHandler, http_status: int, app_status: str, detail: str | None = None) -> None:
+    payload: dict[str, str] = {"status": app_status}
+    if detail:
+        payload["detail"] = detail
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     handler.send_response(http_status)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(body)))
@@ -83,7 +94,7 @@ def normalize_address(value: Any, field_name: str) -> str:
         raise BadRequest(f"{field_name} is invalid")
 
     display_name, email_addr = parseaddr(value)
-    if not email_addr or "@" not in email_addr or has_header_injection(email_addr):
+    if not email_addr or "@" not in email_addr or email_addr.startswith("@") or has_header_injection(email_addr):
         raise BadRequest(f"{field_name} is invalid")
 
     if display_name:
@@ -105,7 +116,6 @@ def normalize_address_list(value: Any, field_name: str, required: bool = False) 
         raise BadRequest(f"{field_name} must be a string or list of strings")
 
     normalized = [normalize_address(item, field_name) for item in values]
-    normalized = [item for item in normalized if item]
 
     if required and not normalized:
         raise BadRequest(f"{field_name} is required")
@@ -169,17 +179,15 @@ def validate_payload(data: Any) -> tuple[EmailMessage, str, list[str]]:
 
 
 def send_via_smtp(msg: EmailMessage, from_addr: str, recipients: list[str]) -> None:
-    context = ssl.create_default_context()
-
     if SMTP_TLS == "ssl":
-        smtp = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS, context=context)
+        smtp = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS, context=_SSL_CONTEXT)
     else:
         smtp = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS)
 
     try:
         if SMTP_TLS == "starttls":
             smtp.ehlo()
-            smtp.starttls(context=context)
+            smtp.starttls(context=_SSL_CONTEXT)
             smtp.ehlo()
 
         smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
@@ -218,7 +226,10 @@ class MailAPIHandler(BaseHTTPRequestHandler):
             content_length_raw = self.headers.get("Content-Length")
             if content_length_raw is None:
                 raise BadRequest("missing Content-Length")
-            content_length = int(content_length_raw)
+            try:
+                content_length = int(content_length_raw)
+            except ValueError:
+                raise BadRequest("invalid Content-Length")
             if content_length < 0 or content_length > MAX_BODY_BYTES:
                 raise BadRequest("body too large")
 
@@ -230,16 +241,24 @@ class MailAPIHandler(BaseHTTPRequestHandler):
 
             msg, from_addr, recipients = validate_payload(data)
             send_via_smtp(msg, from_addr, recipients)
-            json_response(self, 200, "ok")
 
-        except BadRequest:
-            json_response(self, 400, "bad_request")
+        except BadRequest as exc:
+            json_response(self, 400, "bad_request", detail=str(exc))
+            return
         except (smtplib.SMTPException, OSError) as exc:
             print(json.dumps({"event": "smtp_error", "error_type": type(exc).__name__}), file=sys.stderr)
             json_response(self, 500, "smtp")
+            return
         except Exception as exc:
             print(json.dumps({"event": "internal_error", "error_type": type(exc).__name__}), file=sys.stderr)
             json_response(self, 500, "failed")
+            return
+
+        # SMTP accepted the message — respond to client
+        try:
+            json_response(self, 200, "ok")
+        except OSError:
+            pass  # client disconnected; email was already sent
 
 
 def main() -> None:
