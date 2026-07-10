@@ -112,7 +112,7 @@ All logs are **JSON lines to stderr** (not stdout, which is reserved for the HTT
 | `SMTP_USERNAME` | no | Omit for open relay |
 | `SMTP_PASSWORD` | no | |
 | `SMTP_FROM_DEFAULT` | no | Falls back to `SMTP_USERNAME` |
-| `SMTP_CONFIG_PATH` | no | Default `/app/smtp_config.json` — delete to re-probe |
+| `SMTP_CONFIG_PATH` | no | Default `/app/config/smtp_config.json` inside mounted `./config` dir |
 | `LISTEN_HOST` / `LISTEN_PORT` | no | Default `0.0.0.0:8080` |
 | `MAX_RECIPIENTS` / `MAX_BODY_BYTES` | no | Default 20 / 1 MiB |
 | `SMTP_PROBE_TIMEOUT` / `SMTP_PROBE_DELAY` | no | Default 10s / 3s |

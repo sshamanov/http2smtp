@@ -73,7 +73,7 @@ Credentials (`SMTP_USERNAME`, `SMTP_PASSWORD`) are **never written to disk** —
 | `LISTEN_PORT` | no | `8080` | HTTP bind port. |
 | `MAX_RECIPIENTS` | no | `20` | Max total `to` + `cc` + `bcc` recipients per request. |
 | `MAX_BODY_BYTES` | no | `1048576` | Max HTTP JSON body size (1 MiB). |
-| `SMTP_CONFIG_PATH` | no | `/app/smtp_config.json` | Path to cached probe config. Delete to re-probe. |
+| `SMTP_CONFIG_PATH` | no | `/app/config/smtp_config.json` | Path to cached probe config inside mounted `./config` dir. |
 | `SMTP_PROBE_TIMEOUT` | no | `10` | Seconds per probe attempt. |
 | `SMTP_PROBE_DELAY` | no | `3` | Seconds between probe attempts (rate limiting). |
 | `SMTP_RUNTIME_TIMEOUT` | no | `30` | Seconds per SMTP send operation. |
@@ -94,7 +94,7 @@ Compose uses `network_mode: host` to avoid NAT/bridge issues with SMTP connectio
 ```bash
 docker build --network host -t mail-api:latest .
 docker run --rm --network host \
-  -v "$(pwd)/smtp_config.json:/app/smtp_config.json" \
+  -v "$(pwd)/config:/app/config" \
   -e API_TOKEN=secret \
   -e SMTP_HOST=mail.example.com \
   -e SMTP_USERNAME=user@example.com \
