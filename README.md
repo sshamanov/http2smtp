@@ -2,142 +2,127 @@
 
 A small synchronous HTTP API wrapper for an existing authenticated SMTP MTA.
 
-It is intentionally not a full SendGrid, Mailgun, Postmark, or SES replacement. It only gives internal applications a simple HTTP JSON interface for sending low-volume transactional email through an existing mail server.
+It is intentionally not a full SendGrid, Mailgun, Postmark, or SES replacement. It gives internal applications a simple HTTP JSON interface for sending low-volume transactional email through an existing mail server — including open relays and self-signed-cert servers.
+
+## Architecture
+
+```
+Client app
+  → HTTP POST /send  (Bearer token auth)
+  → Python mail API  (stdlib, single file)
+  → SMTP submission  (auto-probed TLS + auth)
+  → existing MTA     (standard or open relay)
+```
+
+The request is synchronous. The API opens an SMTP connection, authenticates if needed, submits the message, and returns the result.
+
+Success means the configured SMTP server accepted the message. The app does **not** track final delivery, inbox placement, remote SMTP delivery, or bounces.
+
+## SMTP auto-probing (carousel)
+
+On first startup the app probes the SMTP server to discover a working combination of port, TLS mode, and auth requirement. It tries combinations ordered by likelihood:
+
+**With credentials** (`SMTP_USERNAME` + `SMTP_PASSWORD` set):
+1. `587/starttls/auth` — standard submission
+2. `587/none/auth`
+3. `465/ssl/auth` — legacy SMTPS
+4. `25/none/auth`
+5. `25/starttls/auth`
+6. `25/none/noauth` — open-relay fallback
+
+**Without credentials** (open relay):
+1. `25/none/noauth` — most common
+2. `587/starttls/noauth`
+3. `587/none/noauth`
+4. `465/ssl/noauth`
+5. `25/starttls/noauth`
+
+The first successful combination is saved to `smtp_config.json` and reused on subsequent starts. Delete the file (or the specific server key) to force re-probe.
+
+SSL certificate verification is **always disabled** — the app targets internal networks, self-signed certificates (docker-mailserver), and open relays that rarely have valid certs.
+
+`SMTP_PORT` can be set to narrow probing to a single port. Config file keys are hostnames (e.g. `"mail.example.com"`) normally, or `"hostname:port"` when `SMTP_PORT` is explicitly set — so adding a port later creates a separate entry rather than overwriting.
+
+Credentials (`SMTP_USERNAME`, `SMTP_PASSWORD`) are **never written to disk** — only the `auth_required` flag and `auth_mechanism` string are stored.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `app.py` | Complete Python app in one file. Uses only Python stdlib. |
-| `compose.yaml` | Example Docker Compose service. |
+| `app.py` | Complete Python app in one file. Stdlib only. |
+| `Dockerfile` | Builds a minimal `python:3.12-alpine` image. |
+| `entrypoint.sh` | Validates required env vars at startup; prints `API.md` if any are missing. |
+| `compose.yaml.example` | Reference Compose deployment with `network_mode: host` and `smtp_config.json` volume mount. |
+| `.env.example` | Template for Compose env vars. Copy to `.env` and fill in. |
 | `API.md` | API contract and integration guide. |
-| `README.md` | Combined project documentation. |
-
-## Architecture
-
-```text
-Client app
-  -> HTTP POST /send
-  -> Bearer token auth
-  -> Python mail API
-  -> authenticated SMTP
-  -> existing MTA
-```
-
-The request is synchronous. The API opens an SMTP connection, authenticates, submits the message, and returns the result.
-
-Success means the configured SMTP server accepted the message. The app does not track final delivery, inbox placement, remote SMTP delivery, or bounces.
-
-## Features
-
-- Single-file Python service
-- Python standard library only
-- Static bearer token authentication
-- JSON HTTP API
-- Synchronous SMTP submission
-- SMTP auth support
-- TLS modes: `starttls`, `ssl`, `none`
-- Plain text and HTML email support
-- Optional `cc`, `bcc`, and `reply_to`
-- Simple health check
-- Basic request limits
-
-## Non-goals
-
-The app does not provide:
-
-- message queue
-- database
-- retry worker
-- delivery tracking
-- bounce parsing
-- templates
-- attachments
-- webhooks
-- admin UI
-- campaign or bulk mail tools
-- SES/SendGrid/Mailgun/Postmark protocol compatibility
-
-## Requirements
-
-- Docker, or Python 3.12+
-- Existing SMTP MTA with username/password authentication
-
-The code should also work on recent Python 3 versions with the same standard library APIs, but the Compose example uses `python:3.12-alpine`.
+| `test_app.py` | 28 tests: 23 validation + 5 real-SMTP E2E. |
+| `AGENTS.md` | Guidance for Claude Code agents working in this repo. |
+| `.github/workflows/build.yml` | CI: build and push Docker image to GHCR. |
 
 ## Environment variables
 
 | Variable | Required | Default | Description |
-|---|---:|---|---|
-| `API_TOKEN` | Yes | none | Static bearer token for HTTP API auth. |
-| `LISTEN_HOST` | No | `0.0.0.0` | HTTP bind address. |
-| `LISTEN_PORT` | No | `8080` | HTTP bind port. |
-| `SMTP_HOST` | Yes | none | SMTP server hostname or IP. |
-| `SMTP_PORT` | No | `587` | SMTP server port. |
-| `SMTP_USERNAME` | Yes | none | SMTP auth username. |
-| `SMTP_PASSWORD` | Yes | none | SMTP auth password. |
-| `SMTP_TLS` | No | `starttls` | One of `starttls`, `ssl`, or `none`. |
-| `SMTP_FROM_DEFAULT` | Yes | none | Default From address if request omits `from`. |
-| `SMTP_TIMEOUT_SECONDS` | No | `30` | SMTP socket timeout. |
-| `MAX_RECIPIENTS` | No | `20` | Maximum total `to` + `cc` + `bcc` recipients. |
-| `MAX_BODY_BYTES` | No | `1048576` | Maximum HTTP JSON body size. |
+|---|---|---|---|
+| `API_TOKEN` | **yes** | — | Static Bearer token for HTTP auth. |
+| `SMTP_HOST` | **yes** | — | SMTP server hostname or IP. |
+| `SMTP_PORT` | no | — | Narrow carousel probing to a single port. |
+| `SMTP_USERNAME` | no | — | SMTP auth username. Omit for open relay. |
+| `SMTP_PASSWORD` | no | — | SMTP auth password. |
+| `SMTP_FROM_DEFAULT` | no | `$SMTP_USERNAME` | Fallback From address when request omits `from`. |
+| `LISTEN_HOST` | no | `0.0.0.0` | HTTP bind address. |
+| `LISTEN_PORT` | no | `8080` | HTTP bind port. |
+| `MAX_RECIPIENTS` | no | `20` | Max total `to` + `cc` + `bcc` recipients per request. |
+| `MAX_BODY_BYTES` | no | `1048576` | Max HTTP JSON body size (1 MiB). |
+| `SMTP_CONFIG_PATH` | no | `/app/smtp_config.json` | Path to cached probe config. Delete to re-probe. |
+| `SMTP_PROBE_TIMEOUT` | no | `10` | Seconds per probe attempt. |
+| `SMTP_PROBE_DELAY` | no | `3` | Seconds between probe attempts (rate limiting). |
+| `SMTP_RUNTIME_TIMEOUT` | no | `30` | Seconds per SMTP send operation. |
 
 ## Run with Docker Compose
 
-Create a `.env` file next to `compose.yaml`:
-
-```env
-API_TOKEN=change-this-token
-SMTP_HOST=mail.example.com
-SMTP_PORT=587
-SMTP_USERNAME=smtp-user@example.com
-SMTP_PASSWORD=change-this-password
-SMTP_TLS=starttls
-SMTP_FROM_DEFAULT=noreply@example.com
-```
-
-Start the service:
-
 ```bash
+cp compose.yaml.example compose.yaml
+cp .env.example .env
+# Edit .env with your values
 docker compose up -d
 ```
 
-Check logs:
+Compose uses `network_mode: host` to avoid NAT/bridge issues with SMTP connections. The `smtp_config.json` is mounted from the host so probe results persist across container restarts.
+
+## Run directly with Docker
 
 ```bash
-docker compose logs -f mail-api
+docker build --network host -t mail-api:latest .
+docker run --rm --network host \
+  -v "$(pwd)/smtp_config.json:/app/smtp_config.json" \
+  -e API_TOKEN=secret \
+  -e SMTP_HOST=mail.example.com \
+  -e SMTP_USERNAME=user@example.com \
+  -e SMTP_PASSWORD=password \
+  mail-api:latest
 ```
 
-Stop:
-
-```bash
-docker compose down
-```
-
-## Run directly with Python
+## Run with Python (dev only)
 
 ```bash
 export API_TOKEN=change-this-token
 export SMTP_HOST=mail.example.com
-export SMTP_PORT=587
-export SMTP_USERNAME=smtp-user@example.com
-export SMTP_PASSWORD=change-this-password
-export SMTP_TLS=starttls
-export SMTP_FROM_DEFAULT=noreply@example.com
-python app.py
+export SMTP_USERNAME=user@example.com
+export SMTP_PASSWORD=password
+python3 app.py
 ```
+
+Production deployments should use Docker/Compose.
 
 ## API summary
 
-### Send email
+### POST /send
 
 ```http
 POST /send
 Authorization: Bearer <API_TOKEN>
 Content-Type: application/json
 ```
-
-Example:
 
 ```json
 {
@@ -162,67 +147,62 @@ Minimal request:
 }
 ```
 
-### Responses
-
-| Case | HTTP | Body |
-|---|---:|---|
-| SMTP MTA accepted the message | `200` | `{"status":"ok"}` |
-| Wrong or missing API token | `401` | `{"status":"auth"}` |
-| Bad JSON or invalid request | `400` | `{"status":"bad_request"}` |
-| SMTP failure | `500` | `{"status":"smtp"}` |
-| Unexpected internal failure | `500` | `{"status":"failed"}` |
-
-### Health check
+### GET /health
 
 ```http
 GET /health
 ```
+→ `200 {"status":"ok"}` — no auth required, does not test SMTP connectivity.
 
-Response:
+### Responses
 
-```json
-{"status":"ok"}
-```
+| Case | HTTP | Body |
+|---|---|---|
+| SMTP accepted | `200` | `{"status":"ok"}` |
+| Wrong/missing token | `401` | `{"status":"auth"}` |
+| Bad JSON or invalid request | `400` | `{"status":"bad_request","detail":"reason"}` |
+| SMTP failure | `500` | `{"status":"smtp"}` |
+| Unexpected error | `500` | `{"status":"failed"}` |
 
-The health check confirms the HTTP service is running. It does not test SMTP connectivity.
+### Client guidance
 
-## Curl test
+- `200` — email accepted by MTA. Do not retry.
+- `401` — config error. Do not retry.
+- `400` — client payload error. Do not retry.
+- `500 smtp` — SMTP-side failure. Retry only if duplicate email is acceptable.
+- `500 failed` — internal error. Retry only if duplicate email is acceptable.
+
+The API has no idempotency key and no queue. A retry may send the same email twice if the first request reached the SMTP server but the HTTP response failed afterward.
+
+## Non-goals
+
+- message queue, database, retry worker
+- delivery tracking, bounce parsing
+- templates, attachments, webhooks
+- admin UI, campaign or bulk mail tools
+- SES/SendGrid/Mailgun/Postmark protocol compatibility
+
+## Requirements
+
+- Docker, or Python 3.12+
+- Existing SMTP MTA (or open relay) — auto-probed on first start
+
+## Testing
 
 ```bash
-curl -sS -X POST http://localhost:8080/send \
-  -H "Authorization: Bearer $API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to": ["user@example.net"],
-    "subject": "Test message",
-    "text": "Hello from Simple MTA Mail API"
-  }'
+# Validation tests (no SMTP needed)
+python3 test_app.py
+
+# Full E2E against a real SMTP server
+TEST_SMTP_HOST=mail.example.com \
+TEST_SMTP_USERNAME=user@example.com \
+TEST_SMTP_PASSWORD=password \
+TEST_SMTP_FROM_DEFAULT=noreply@example.com \
+python3 test_app.py
 ```
 
-Expected success:
+Tests cover health checks, auth, routing, input validation (17+ edge cases), and real SMTP delivery with plain text, HTML, CC, Reply-To, default from, and multiple recipients.
 
-```json
-{"status":"ok"}
-```
+## CI
 
-## Security notes
-
-- Keep the service behind HTTPS if it is reachable over a network.
-- Use a long random `API_TOKEN`.
-- Do not expose this service publicly without a reverse proxy, TLS, firewall rules, and rate limiting.
-- The app intentionally returns coarse error statuses and does not expose SMTP error details to clients.
-- Logs do not print the API token or SMTP password.
-- This app is an authenticated HTTP relay. Restrict network access where possible.
-
-## Operational notes
-
-The service uses `ThreadingHTTPServer`, so it can handle more than one HTTP request at a time. Each `/send` request opens its own SMTP connection.
-
-For small message volume this is simpler and good enough. If volume grows, the next likely improvements are:
-
-1. Add a concurrency limit around SMTP sends.
-2. Add a queue and worker.
-3. Add idempotency keys.
-4. Add delivery/bounce processing from MTA logs or mailbox bounces.
-
-Those are intentionally excluded from this version.
+GitHub Actions builds and pushes to `ghcr.io/sshamanov/mail-api` on push to `main` and tags. PRs build without pushing.
