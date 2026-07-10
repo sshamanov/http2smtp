@@ -57,7 +57,7 @@ SMTP_USERNAME = os.getenv("SMTP_USERNAME") or None
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD") or None
 SMTP_FROM_DEFAULT = os.getenv("SMTP_FROM_DEFAULT") or SMTP_USERNAME or ""
 
-SMTP_CONFIG_PATH = os.getenv("SMTP_CONFIG_PATH", "/app/config/smtp_config.json")
+SMTP_CONFIG_PATH = os.getenv("SMTP_CONFIG_PATH", "/app/config/smtp.json")
 SMTP_PROBE_TIMEOUT = getenv_int("SMTP_PROBE_TIMEOUT", 10)  # seconds per probe attempt
 SMTP_PROBE_DELAY = getenv_int("SMTP_PROBE_DELAY", 3)        # seconds between probes
 SMTP_RUNTIME_TIMEOUT = getenv_int("SMTP_RUNTIME_TIMEOUT", 30)  # seconds for normal send

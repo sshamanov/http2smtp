@@ -22,13 +22,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 3. **Single-file app.** `app.py` remains the sole Python module. Do not split into multiple `.py` files. Stdlib only — never introduce pip dependencies.
 
-4. **Production uses Compose.** `compose.yaml.example` is the reference deployment. The Dockerfile bakes `app.py` and `API.md` into the image. At runtime, `smtp_config.json` is mounted as a volume for persistence.
+4. **Production uses Compose.** `compose.yaml.example` is the reference deployment. The Dockerfile bakes `app.py` and `API.md` into the image. At runtime, `smtp.json` is mounted as a volume for persistence.
 
 5. **Commit and push after every functional change.** Every code review fix, feature addition, or doc update is a commit. Push immediately after.
 
 6. **JSON-line logging to stderr.** All structured output (events, errors, probe results) goes to stderr as one JSON object per line. stdout is reserved for the HTTP server's own output.
 
-7. **Config file is append-only across servers.** `smtp_config.json` is a dict keyed by server hostname (or `hostname:port` when `SMTP_PORT` is explicitly set). Probing appends new entries; old entries for other servers are preserved. Delete the file or a specific key to force re-probe.
+7. **Config file is append-only across servers.** `smtp.json` is a dict keyed by server hostname (or `hostname:port` when `SMTP_PORT` is explicitly set). Probing appends new entries; old entries for other servers are preserved. Delete the file or a specific key to force re-probe.
 
 8. **Auth is never stored to disk.** `SMTP_USERNAME` and `SMTP_PASSWORD` live in env vars only. The config file records `auth_required: true` and `auth_mechanism` but never the credentials themselves.
 
@@ -112,7 +112,7 @@ All logs are **JSON lines to stderr** (not stdout, which is reserved for the HTT
 | `SMTP_USERNAME` | no | Omit for open relay |
 | `SMTP_PASSWORD` | no | |
 | `SMTP_FROM_DEFAULT` | no | Falls back to `SMTP_USERNAME` |
-| `SMTP_CONFIG_PATH` | no | Default `/app/config/smtp_config.json` inside mounted `./config` dir |
+| `SMTP_CONFIG_PATH` | no | Default `/app/config/smtp.json` inside mounted `./config` dir |
 | `LISTEN_HOST` / `LISTEN_PORT` | no | Default `0.0.0.0:8080` |
 | `MAX_RECIPIENTS` / `MAX_BODY_BYTES` | no | Default 20 / 1 MiB |
 | `SMTP_PROBE_TIMEOUT` / `SMTP_PROBE_DELAY` | no | Default 10s / 3s |

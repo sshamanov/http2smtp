@@ -37,7 +37,7 @@ On first startup the app probes the SMTP server to discover a working combinatio
 4. `465/ssl/noauth`
 5. `25/starttls/noauth`
 
-The first successful combination is saved to `smtp_config.json` and reused on subsequent starts. Delete the file (or the specific server key) to force re-probe.
+The first successful combination is saved to `smtp.json` and reused on subsequent starts. Delete the file (or the specific server key) to force re-probe.
 
 SSL certificate verification is **always disabled** — the app targets internal networks, self-signed certificates (docker-mailserver), and open relays that rarely have valid certs.
 
@@ -52,7 +52,7 @@ Credentials (`SMTP_USERNAME`, `SMTP_PASSWORD`) are **never written to disk** —
 | `app.py` | Complete Python app in one file. Stdlib only. |
 | `Dockerfile` | Builds a minimal `python:3.12-alpine` image. |
 | `entrypoint.sh` | Validates required env vars at startup; prints `API.md` if any are missing. |
-| `compose.yaml.example` | Reference Compose deployment with `network_mode: host` and `smtp_config.json` volume mount. |
+| `compose.yaml.example` | Reference Compose deployment with `network_mode: host` and `smtp.json` volume mount. |
 | `.env.example` | Template for Compose env vars. Copy to `.env` and fill in. |
 | `API.md` | API contract and integration guide. |
 | `test_app.py` | 28 tests: 23 validation + 5 real-SMTP E2E. |
@@ -73,7 +73,7 @@ Credentials (`SMTP_USERNAME`, `SMTP_PASSWORD`) are **never written to disk** —
 | `LISTEN_PORT` | no | `8080` | HTTP bind port. |
 | `MAX_RECIPIENTS` | no | `20` | Max total `to` + `cc` + `bcc` recipients per request. |
 | `MAX_BODY_BYTES` | no | `1048576` | Max HTTP JSON body size (1 MiB). |
-| `SMTP_CONFIG_PATH` | no | `/app/config/smtp_config.json` | Path to cached probe config inside mounted `./config` dir. |
+| `SMTP_CONFIG_PATH` | no | `/app/config/smtp.json` | Path to cached probe config inside mounted `./config` dir. |
 | `SMTP_PROBE_TIMEOUT` | no | `10` | Seconds per probe attempt. |
 | `SMTP_PROBE_DELAY` | no | `3` | Seconds between probe attempts (rate limiting). |
 | `SMTP_RUNTIME_TIMEOUT` | no | `30` | Seconds per SMTP send operation. |
@@ -87,7 +87,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Compose uses `network_mode: host` to avoid NAT/bridge issues with SMTP connections. The `smtp_config.json` is mounted from the host so probe results persist across container restarts.
+Compose uses `network_mode: host` to avoid NAT/bridge issues with SMTP connections. The `smtp.json` is mounted from the host so probe results persist across container restarts.
 
 ## Run directly with Docker
 

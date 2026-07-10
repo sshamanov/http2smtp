@@ -22,5 +22,5 @@ services:
       # Limits
       MAX_RECIPIENTS: "${MAX_RECIPIENTS:-20}"
       MAX_BODY_BYTES: "${MAX_BODY_BYTES:-1048576}"
-      # Probe config (delete smtp_config.json inside ./config to force re-probe)
-      SMTP_CONFIG_PATH: "${SMTP_CONFIG_PATH:-/app/config/smtp_config.json}"
+      # Probe config (delete smtp.json inside ./config to force re-probe)
+      SMTP_CONFIG_PATH: "${SMTP_CONFIG_PATH:-/app/config/smtp.json}"
