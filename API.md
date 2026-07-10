@@ -67,6 +67,11 @@ Content-Type: application/json
 
 ### Fields
 
+Address fields (`from`, `to`, `cc`, `bcc`, `reply_to`) accept plain email or display-name form:
+
+- `"user@example.com"`
+- `"John Doe <user@example.com>"`
+
 | Field | Required | Type | Notes |
 |---|---:|---|---|
 | `from` | No | string | Falls back to `SMTP_FROM_DEFAULT` if omitted. |
