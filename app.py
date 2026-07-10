@@ -19,7 +19,8 @@ import ssl
 import sys
 import time
 from email.message import EmailMessage
-from email.utils import formataddr, parseaddr
+from email import policy
+from email.utils import formataddr, formatdate, make_msgid, parseaddr
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -343,7 +344,7 @@ def validate_payload(data: Any) -> tuple[EmailMessage, str, list[str]]:
     if reply_to is not None:
         reply_to_addr = normalize_address(reply_to, "reply_to")
 
-    msg = EmailMessage()
+    msg = EmailMessage(policy=policy.SMTP)
     msg["From"] = from_addr
     msg["To"] = ", ".join(to_addrs)
     if cc_addrs:
@@ -351,6 +352,8 @@ def validate_payload(data: Any) -> tuple[EmailMessage, str, list[str]]:
     if reply_to_addr:
         msg["Reply-To"] = reply_to_addr
     msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=parseaddr(from_addr)[1].split("@")[-1] or "localhost")
 
     if text_body and html_body:
         msg.set_content(text_body)
