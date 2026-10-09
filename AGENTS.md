@@ -4,15 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Rules
 
-1. **Test in Docker only.** Do not run `python3 test_app.py` directly against the host. Build the image and run tests inside a container with `--network host` and a mounted `app.py` so local changes are tested live:
+1. **Test in Docker only.** Do not run `python3 test_app.py` directly against the host. Build the image and run tests inside a container with `--network host` and a mounted `app.py` so local changes are tested live. Real SMTP credentials come from the shell environment (`SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_DEFAULT`, e.g. sourced from the untracked `.env`) — never write them into tracked files:
 
    ```bash
    docker build --network host -t mail-api:test .
    docker run --rm --network host \
      -v "$(pwd)/app.py:/app/app.py:ro" \
-     -e API_TOKEN=test -e SMTP_HOST=mail.example.com \
-     -e SMTP_USERNAME=user@example.com \
-     -e SMTP_PASSWORD=password \
+     -e API_TOKEN=test -e SMTP_HOST \
+     -e SMTP_USERNAME -e SMTP_PASSWORD \
      mail-api:test
    ```
 
@@ -49,13 +48,11 @@ docker build --network host -t mail-api:test . && \
 docker run -d --name mail-api-e2e --network host \
   -v "$(pwd)/app.py:/app/app.py:ro" \
   -e API_TOKEN=test-token-abc123 \
-  -e SMTP_HOST=mail.example.com \
-  -e SMTP_USERNAME=user@example.com \
-  -e SMTP_PASSWORD=password \
+  -e SMTP_HOST -e SMTP_USERNAME -e SMTP_PASSWORD \
   mail-api:test && \
-TEST_SMTP_HOST=mail.example.com TEST_SMTP_USERNAME=user@example.com \
-TEST_SMTP_PASSWORD=password \
-TEST_SMTP_FROM_DEFAULT=noreply@example.com python3 test_app.py ; \
+TEST_SMTP_HOST="$SMTP_HOST" TEST_SMTP_USERNAME="$SMTP_USERNAME" \
+TEST_SMTP_PASSWORD="$SMTP_PASSWORD" \
+TEST_SMTP_FROM_DEFAULT="$SMTP_FROM_DEFAULT" python3 test_app.py ; \
 docker rm -f mail-api-e2e
 
 # Production Compose

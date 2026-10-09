@@ -205,4 +205,4 @@ Tests cover health checks, auth, routing, input validation (17+ edge cases), and
 
 ## CI
 
-GitHub Actions builds and pushes to `ghcr.io/sshamanov/mail-api` on push to `main` and tags. PRs build without pushing.
+GitHub Actions builds and pushes to `ghcr.io/sshamanov/http2smtp` on push to `main` and tags. PRs build without pushing.

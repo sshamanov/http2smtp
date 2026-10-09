@@ -10,11 +10,11 @@ Usage:
   python3 test_app.py
 
   # Run with real SMTP:
-  TEST_SMTP_HOST=mail.example.com                  \
+  TEST_SMTP_HOST="$SMTP_HOST"                     \
   TEST_SMTP_PORT=587                              \
-  TEST_SMTP_USERNAME=user@example.com       \
-  TEST_SMTP_PASSWORD=password \
-  TEST_SMTP_FROM_DEFAULT=noreply@example.com        \
+  TEST_SMTP_USERNAME="$SMTP_USERNAME"             \
+  TEST_SMTP_PASSWORD="$SMTP_PASSWORD"             \
+  TEST_SMTP_FROM_DEFAULT="$SMTP_FROM_DEFAULT"     \
   python3 test_app.py
 """
 
